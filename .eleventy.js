@@ -1,6 +1,7 @@
-const prettyBytes = require("pretty-bytes");
+const byteSize = require("byte-size");
 const shortHash = require("short-hash");
 const lodash = require("lodash");
+const getObjectKey = require("./utils/getObjectKey.js");
 
 function showDigits(num, digits = 2, alwaysShowDigits = true) {
 	let toNum = parseFloat(num);
@@ -11,10 +12,43 @@ function showDigits(num, digits = 2, alwaysShowDigits = true) {
 	return toNum.toFixed(digits);
 }
 
+function pad(num) {
+	return (num < 10 ? "0" : "") + num;
+}
+
+function mapProp(prop, targetObj) {
+	if(Array.isArray(prop)) {
+		let otherprops = [];
+		prop =  prop.map(entry => {
+			// TODO this only works as the first entry
+			if(entry === ":lastkey") {
+				entry = Object.keys(targetObj).sort().pop();
+			} else if(entry.indexOf("||") > -1) {
+				for(let key of entry.split("||")) {
+					if(lodash.get(targetObj, [...otherprops, key])) {
+						entry = key;
+						break;
+					}
+				}
+			}
+			otherprops.push(entry);
+
+			return entry;
+		});
+	}
+
+	return prop;
+}
+
+function getLighthouseTotal(entry) {
+	return entry.lighthouse.performance * 100 +
+		entry.lighthouse.accessibility * 100 +
+		entry.lighthouse.bestPractices * 100 +
+		entry.lighthouse.seo * 100;
+}
+
 module.exports = function(eleventyConfig) {
-	eleventyConfig.addFilter("shortHash", function(value) {
-		return shortHash(value);
-	});
+	eleventyConfig.addFilter("shortHash", shortHash);
 
 	eleventyConfig.addFilter("repeat", function(str, times) {
 		let result = '';
@@ -26,13 +60,7 @@ module.exports = function(eleventyConfig) {
 		return result;
 	});
 
-	eleventyConfig.addFilter("head", function(arr, num) {
-		if(num) {
-			return arr.slice(0, num);
-		}
-		return arr;
-	});
-
+	// first ${num} entries (and the last entry too)
 	eleventyConfig.addFilter("headAndLast", function(arr, num) {
 		if(num && num < arr.length) {
 			let newArr = arr.slice(0, num);
@@ -54,43 +82,25 @@ module.exports = function(eleventyConfig) {
 
 	eleventyConfig.addFilter("displayTime", function(time) {
 		let num = parseFloat(time);
-		if(num > 1000) {
+		if(num > 850) {
 			return `${showDigits(num / 1000, 2)}s`;
 		}
 		return `${showDigits(num, 0)}ms`;
 	});
 
 	eleventyConfig.addFilter("displayFilesize", function(size) {
-		return prettyBytes(size);
+		let normalizedSize = byteSize(size, { units: 'iec', precision: 0 });
+		let unit = normalizedSize.unit;
+		let value = normalizedSize.value;
+		return `<span class="filesize">${value}<span class="filesize-label-sm">${unit.substr(0,1)}</span><span class="filesize-label-lg"> ${unit}</span></span>`;
 	});
 
-	function pad(num) {
-		return (num < 10 ? "0" : "") + num;
-	}
 	eleventyConfig.addFilter("displayDate", function(timestamp) {
 		let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 		let date = new Date(timestamp);
 		let day = `${months[date.getMonth()]} ${pad(date.getDate())}`;
-		return `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+		return `${day} <span class="leaderboard-hide-md">${pad(date.getHours())}:${pad(date.getMinutes())}</span>`;
 	});
-
-	function mapProp(prop, targetObj) {
-		if(Array.isArray(prop)) {
-			prop =  prop.map(entry => {
-				if(entry === ":lastkey") {
-					let ret;
-					for(let key in targetObj) {
-						ret = key;
-					}
-					return ret;
-				}
-
-				return entry;
-			});
-		}
-
-		return prop;
-	}
 
 	// Works with arrays too
 	// Sort an object that has `order` props in values.
@@ -135,23 +145,7 @@ module.exports = function(eleventyConfig) {
 		return sorted;
 	});
 
-	eleventyConfig.addFilter("getObjectKey", (obj, which = ":first") => {
-		let ret;
-		let newestTimestamp = 0;
-		for(let key in obj) {
-			ret = key;
-			if(which === ":newest") {
-				if(obj[key].timestamp > newestTimestamp) {
-					newestTimestamp = obj[key].timestamp;
-					ret = key;
-				}
-			}
-			if(which === ":first") {
-				return ret;
-			}
-		}
-		return ret;
-	});
+	eleventyConfig.addFilter("getObjectKey", getObjectKey);
 
 	eleventyConfig.addFilter("filterToUrls", (obj, urls = []) => {
 		let arr = [];
@@ -186,19 +180,34 @@ module.exports = function(eleventyConfig) {
 		return count;
 	});
 
-	eleventyConfig.addFilter("lighthouseTotal", (entry) => {
-		let total = 0;
-		total += entry.lighthouse.performance;
-		total += entry.lighthouse.accessibility;
-		total += entry.lighthouse.bestPractices;
-		total += entry.lighthouse.seo;
-		return Math.round(total * 100);
+	eleventyConfig.addFilter("lighthouseTotal", getLighthouseTotal);
+
+	eleventyConfig.addFilter("addLighthouseTotals", (arr) => {
+		/* special case */
+		for(let obj of arr) {
+			for(let entry in obj) {
+				if(obj[entry].lighthouse) {
+					obj[entry].lighthouse[":lhtotal"] = getLighthouseTotal(obj[entry]);
+				}
+			}
+		}
+		return arr;
 	});
 
-	eleventyConfig.addPassthroughCopy({
-		"./node_modules/chartist/dist/chartist.css": "chartist.css",
-		"./node_modules/chartist/dist/chartist.js": "chartist.js",
+	eleventyConfig.addFilter("toJSON", function(obj) {
+		return JSON.stringify(obj);
 	});
-	eleventyConfig.addPassthroughCopy("chart.js");
-	eleventyConfig.addTemplateFormats("css");
+
+	// Assets
+	eleventyConfig.addPassthroughCopy({
+		"./node_modules/chartist/dist/chartist.js": "chartist.js",
+		"./node_modules/chartist/dist/chartist.css.map": "chartist.css.map",
+	});
+
+	eleventyConfig.addWatchTarget("./assets/");
+
+	eleventyConfig.setBrowserSyncConfig({
+		ui: false,
+		ghostMode: false
+	});
 };
